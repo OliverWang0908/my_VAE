@@ -1,0 +1,22 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Downloaded data and generated experiment outputs.
+work/
+inference_figures/
+outputs/*
+!outputs/.gitkeep
+
+# LaTeX build intermediates (keep source and the rendered PDF).
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc

@@ -1,0 +1,678 @@
+\documentclass[11pt]{article}
+
+\usepackage[letterpaper,margin=0.88in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs,tabularx,array,multirow}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[colorlinks=true,linkcolor=red!65!black,citecolor=red!65!black,urlcolor=red!65!black]{hyperref}
+
+\definecolor{codeblue}{RGB}{35,80,140}
+\definecolor{codegreen}{RGB}{25,110,65}
+\definecolor{lightgray}{RGB}{246,246,246}
+\definecolor{rulegray}{RGB}{185,185,185}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.48em}
+\setlength{\headheight}{14pt}
+\setlist[itemize]{leftmargin=1.5em,itemsep=0.25em,topsep=0.25em}
+\setlist[enumerate]{leftmargin=1.7em,itemsep=0.25em,topsep=0.25em}
+\captionsetup{font=small,labelfont=bf}
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.7em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{VAE on MNIST: Reproduction Write-Up}
+\rhead{Auto-Encoding Variational Bayes}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+
+\lstdefinestyle{pythonstyle}{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{codeblue}\bfseries,
+  commentstyle=\color{codegreen},
+  stringstyle=\color{red!65!black},
+  backgroundcolor=\color{lightgray},
+  frame=single,
+  rulecolor=\color{rulegray},
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false,
+  aboveskip=0.5em,
+  belowskip=0.5em
+}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\KL}{D_{\mathrm{KL}}}
+\newcommand{\code}[1]{\texttt{#1}}
+\graphicspath{{figures/}}
+
+\begin{document}
+
+\begin{center}
+  {\Large Reproduction Write-Up}\\[0.35em]
+  {\LARGE\bfseries Auto-Encoding Variational Bayes on MNIST}\\[0.85em]
+  {\large Based on Kingma and Welling, \emph{Auto-Encoding Variational Bayes}}\\[0.5em]
+  {\normalsize Dataset: MNIST \quad Latent space: 20 dimensions \quad Hidden units: 500}\\[0.2em]
+  {\normalsize Reproduction date: October 3, 2026}
+\end{center}
+
+\vspace{0.6em}
+\section*{Start Here}
+
+\begin{itemize}
+  \item \textbf{Goal.} Reproduce the paper's MNIST variational auto-encoder (VAE) with a 20-dimensional latent space, including the evidence lower bound (ELBO), Gaussian reparameterization, stochastic optimization, reconstruction, prior sampling, t-SNE inspection, and latent interpolation.
+  \item \textbf{Allowed software.} The model is implemented in PyTorch; \code{torchvision} is used only for the MNIST loader and image grids. The optimizer and automatic differentiation are provided by PyTorch.
+  \item \textbf{Reproducibility.} The run fixes seed 42, stores all hyperparameters and metrics, and generates every figure in this write-up directly from the final checkpoint.
+  \item \textbf{Scope.} This is a focused reproduction, not a claim of bit-for-bit equivalence. The paper's wake-sleep and Monte Carlo EM baselines are not repeated. All departures are listed in Section~\ref{sec:fidelity}.
+\end{itemize}
+
+\vspace{0.3em}
+\section*{Deliverables}
+
+\begin{itemize}
+  \item \code{vae\_mnist\_reproduction\_writeup.pdf}: this report.
+  \item \code{vae\_mnist\_training/}: runnable multi-file training project with documented class and function names.
+  \item \code{vae\_mnist\_training.zip}: portable archive containing source, smoke test, trained checkpoint, configuration, metrics, history, and figures.
+  \item \code{metrics.json} and \code{history.csv}: top-level copies of the final scalar results and per-epoch history.
+\end{itemize}
+
+\newpage
+\section*{Reproduction Objectives}
+
+After completing the experiment, the reader should be able to:
+
+\begin{itemize}
+  \item explain why direct maximum-likelihood learning is difficult when $p_\theta(\bm{x})=\int p_\theta(\bm{x},\bm{z})\,d\bm{z}$ is intractable;
+  \item derive the ELBO and identify its reconstruction and KL-divergence terms;
+  \item explain why $\bm{z}=\bm{\mu}+\bm{\sigma}\odot\bm{\epsilon}$ permits low-variance pathwise gradients;
+  \item map each mathematical object to its PyTorch implementation and tensor shape;
+  \item reproduce the reported metrics and visual diagnostics from a clean environment.
+\end{itemize}
+
+\section*{Checklist}
+
+\begin{tabularx}{\textwidth}{@{}p{0.055\textwidth}X@{}}
+  $\square$ & Install Python, PyTorch, torchvision, NumPy, and Matplotlib. \\
+  $\square$ & Install packages and run \code{train.py} with the command in Appendix~\ref{app:run}. \\
+  $\square$ & Confirm that MNIST contains 60,000 training and 10,000 test images. \\
+  $\square$ & Confirm that both posterior heads output shape $N\times 20$. \\
+  $\square$ & Confirm that reconstruction and KL losses are finite and the KL term is non-negative. \\
+  $\square$ & Confirm that train and test negative ELBO decrease without a widening generalization gap. \\
+  $\square$ & Inspect reconstructions, prior samples, the t-SNE embedding, and latent interpolations. \\
+  $\square$ & Compare the final metrics with Table~\ref{tab:results}. \\
+\end{tabularx}
+
+\vfill
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{\textbf{Reading note.} The paper maximizes the ELBO. The implementation minimizes its negative. Therefore, a lower reported ``negative ELBO'' is better.}}
+\end{center}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+Kingma and Welling propose the stochastic gradient variational Bayes (SGVB) estimator and the auto-encoding variational Bayes (AEVB) algorithm for directed latent-variable models with intractable posteriors~\cite{kingma2013}. The key idea is to learn two networks jointly:
+
+\begin{itemize}
+  \item a \textbf{probabilistic encoder} $q_\phi(\bm{z}\mid\bm{x})$ that approximates the posterior over latent variables; and
+  \item a \textbf{probabilistic decoder} $p_\theta(\bm{x}\mid\bm{z})$ that models how observations are generated from a latent code.
+\end{itemize}
+
+Unlike a deterministic auto-encoder, the VAE is a normalized generative model. The latent prior constrains the code space, while a likelihood model supplies a statistically meaningful reconstruction term. Reparameterization moves the sampling noise into an auxiliary variable independent of $\phi$, allowing gradients to pass through the sample.
+
+MNIST is a suitable reproduction target because the paper uses it directly and its pixels can be modeled with Bernoulli likelihoods. A preliminary two-dimensional run was easy to visualize but produced blurry reconstructions and limited sample diversity. The primary experiment therefore uses $J=20$, one of the latent sizes studied in the paper. Its geometry is inspected with t-SNE and controlled interpolations rather than forcing the generative model itself to remain two-dimensional. The experiment asks three concrete questions:
+
+\begin{enumerate}
+  \item Does stochastic optimization improve the held-out ELBO?
+  \item Does the learned posterior reconstruct previously unseen digits?
+  \item Does sampling and moving continuously through the prior produce coherent digit-like images?
+\end{enumerate}
+
+\section{Problem Setup and Notation}
+
+Let $\bm{x}\in[0,1]^{784}$ be a flattened $28\times 28$ MNIST image and $\bm{z}\in\R^J$ a continuous latent vector. The model factorizes as
+\begin{equation}
+  p_\theta(\bm{x},\bm{z})=p(\bm{z})p_\theta(\bm{x}\mid\bm{z}),
+  \qquad p(\bm{z})=\mathcal{N}(\bm{0},\bm{I}).
+  \label{eq:joint}
+\end{equation}
+The true posterior $p_\theta(\bm{z}\mid\bm{x})$ is intractable because evaluating it requires the marginal likelihood
+\begin{equation}
+  p_\theta(\bm{x})=\int p(\bm{z})p_\theta(\bm{x}\mid\bm{z})\,d\bm{z}.
+\end{equation}
+We therefore introduce a diagonal Gaussian approximation:
+\begin{equation}
+  q_\phi(\bm{z}\mid\bm{x})=
+  \mathcal{N}\!\left(\bm{z};\bm{\mu}_\phi(\bm{x}),
+  \operatorname{diag}\!\left(\bm{\sigma}_\phi^2(\bm{x})\right)\right).
+  \label{eq:q}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Notation used throughout the reproduction.}
+\label{tab:notation}
+\begin{tabularx}{0.94\textwidth}{@{}l l l X@{}}
+\toprule
+Symbol & Code name & Shape & Meaning \\
+\midrule
+$N$ & batch size & scalar & Number of images in a minibatch; $N=100$. \\
+$\bm{x}$ & \code{x} & $N\times784$ & Flattened input images. \\
+$\bm{h}_e$ & encoder hidden & $N\times500$ & Tanh encoder representation. \\
+$\bm{\mu},\log\bm{\sigma}^2$ & \code{mu}, \code{logvar} & $N\times J$ & Approximate posterior parameters. \\
+$\bm{\epsilon}$ & noise & $N\times J$ & Standard-normal auxiliary noise. \\
+$\bm{z}$ & latent code & $N\times J$ & Reparameterized posterior sample. \\
+$\bm{a}$ & \code{logits} & $N\times784$ & Bernoulli logits produced by the decoder. \\
+$\phi$ & encoder parameters & -- & Weights of encoder, mean head, and log-variance head. \\
+$\theta$ & decoder parameters & -- & Weights of decoder hidden and output layers. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Variational Objective}
+
+\subsection{Evidence lower bound}
+
+Insert $q_\phi(\bm{z}\mid\bm{x})$ into the marginal log-likelihood and apply Jensen's inequality:
+\begin{align}
+\log p_\theta(\bm{x})
+&=\log\int q_\phi(\bm{z}\mid\bm{x})
+  \frac{p_\theta(\bm{x},\bm{z})}{q_\phi(\bm{z}\mid\bm{x})}\,d\bm{z} \\
+&\geq \E_{q_\phi(\bm{z}\mid\bm{x})}
+\left[\log p_\theta(\bm{x},\bm{z})-\log q_\phi(\bm{z}\mid\bm{x})\right] \\
+&=\E_{q_\phi}\left[\log p_\theta(\bm{x}\mid\bm{z})\right]
+-\KL\!\left(q_\phi(\bm{z}\mid\bm{x})\,\|\,p(\bm{z})\right)
+\equiv \mathcal{L}(\theta,\phi;\bm{x}).
+\label{eq:elbo}
+\end{align}
+The first term rewards accurate decoding. The KL term regularizes each approximate posterior toward the standard-normal prior, making prior sampling meaningful.
+
+\subsection{Reparameterization trick}
+
+Sampling $\bm{z}\sim q_\phi(\bm{z}\mid\bm{x})$ naively places a stochastic node between the loss and $\phi$. For a Gaussian posterior, write
+\begin{equation}
+  \bm{\epsilon}\sim\mathcal{N}(\bm{0},\bm{I}),
+  \qquad
+  \bm{z}=\bm{\mu}_\phi(\bm{x})+
+  \exp\!\left(\tfrac12\log\bm{\sigma}_\phi^2(\bm{x})\right)\odot\bm{\epsilon}.
+  \label{eq:reparam}
+\end{equation}
+The random variable $\bm{\epsilon}$ is independent of $\phi$. Once sampled, the right-hand side is an ordinary differentiable computation, so automatic differentiation yields a pathwise gradient. As in the paper, the reproduction uses one latent sample per datapoint ($L=1$).
+
+\subsection{Closed-form KL and implemented loss}
+
+For the diagonal Gaussian posterior and standard-normal prior,
+\begin{equation}
+  \KL(q_\phi\|p)=
+  -\frac12\sum_{j=1}^{J}
+  \left(1+\log\sigma_j^2-\mu_j^2-\sigma_j^2\right).
+  \label{eq:kl}
+\end{equation}
+MNIST pixels are modeled with independent Bernoulli variables. If $a_d$ is a decoder logit, the per-image negative ELBO minimized in code is
+\begin{equation}
+  \mathcal{J}(\bm{x})=
+  \underbrace{-\sum_{d=1}^{784}\left[x_d\log \sigma(a_d)+(1-x_d)\log(1-\sigma(a_d))\right]}_{\text{binary cross-entropy / negative log-likelihood}}
+  +\underbrace{\KL(q_\phi\|p)}_{\text{latent regularizer}}.
+  \label{eq:loss}
+\end{equation}
+For numerical stability, the implementation passes logits directly to
+\path{binary_cross_entropy_with_logits}.
+
+\section{Reproduction Design}
+
+\subsection{Network architecture}
+
+The architecture follows the paper's one-hidden-layer MLP example. Both hidden layers use tanh, and all linear weights are initialized from $\mathcal{N}(0,0.01^2)$.
+
+\begin{table}[H]
+\centering
+\caption{Model architecture for the final $J=20$ experiment.}
+\label{tab:architecture}
+\begin{tabularx}{0.92\textwidth}{@{}l l l X@{}}
+\toprule
+Stage & Operation & Output shape & Role \\
+\midrule
+Input & Flatten $28\times28$ image & $N\times784$ & Observation vector. \\
+Encoder & $\tanh(\bm{x}W_e^\top+\bm{b}_e)$ & $N\times500$ & Shared inference features. \\
+Posterior heads & Linear$(500,20)$ twice & $N\times20$ each & Produce $\bm{\mu}$ and $\log\bm{\sigma}^2$. \\
+Sampling & Equation~\eqref{eq:reparam} & $N\times20$ & Differentiable stochastic code. \\
+Decoder & $\tanh(\bm{z}W_d^\top+\bm{b}_d)$ & $N\times500$ & Generative hidden representation. \\
+Output & Linear$(500,784)$ & $N\times784$ & Bernoulli logits. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Dataset and optimization}
+
+\begin{table}[H]
+\centering
+\caption{Final experimental configuration.}
+\label{tab:hyperparameters}
+\begin{tabularx}{0.84\textwidth}{@{}l X@{}}
+\toprule
+Setting & Value \\
+\midrule
+Dataset & MNIST: 60,000 training and 10,000 test images \\
+Input treatment & Scale to $[0,1]$; dynamic Bernoulli binarization during training \\
+Posterior / prior & Diagonal Gaussian / standard normal \\
+Latent dimension & 20 \\
+Hidden units & 500 in encoder and 500 in decoder \\
+Minibatch / samples & 100 images / one $\bm{z}$ sample per image \\
+Optimizer & Adagrad, learning rate 0.01 \\
+Epochs & 50 (30,000 parameter updates) \\
+Initialization & Independent $\mathcal{N}(0,0.01^2)$ weights, zero biases \\
+Random seed & 42 \\
+Evaluation & One posterior sample; unbinarized $[0,1]$ test targets \\
+Device & Apple Metal Performance Shaders (MPS) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Fidelity to the original paper}
+\label{sec:fidelity}
+
+\begin{table}[H]
+\centering
+\caption{What is reproduced and what is intentionally simplified.}
+\begin{tabularx}{\textwidth}{@{}p{0.23\textwidth}X X@{}}
+\toprule
+Component & Paper & This reproduction \\
+\midrule
+Core estimator & AEVB/SGVB with analytic Gaussian KL and $L=1$ & Same \\
+MNIST model & Bernoulli decoder, Gaussian encoder, one 500-unit hidden layer & Same \\
+Batch / optimizer & Batch 100; Adagrad selected from $\{0.01,0.02,0.1\}$ & Batch 100; fixed Adagrad 0.01 \\
+Latent dimensions & Multiple dimensions for bound comparisons, including 20; 2-D used for visualization & One 20-D primary model for reconstruction and generation quality; t-SNE/interpolation for visualization \\
+Training budget & Reported by evaluated examples, extending to many millions & 50 epochs = 3.0 million evaluated training examples \\
+Baselines & Wake-sleep and, in one setting, Monte Carlo EM & Omitted \\
+Weight decay & Small MAP-style weight decay, coefficient unspecified & Omitted rather than inventing a coefficient \\
+Evaluation & Variational bound and separate marginal-likelihood study & Negative ELBO plus visual diagnostics \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Implementation}
+
+\subsection{Training files and function interfaces}
+
+The deliverable is a runnable project rather than a notebook. The map below gives the actual file name, the callable signature to look for, and the returned value. Bodies not essential to the interface are abbreviated with comments; the complete implementations are in \code{vae\_mnist\_training/}.
+
+\begin{lstlisting}[style=pythonstyle,caption={Configuration, data, model, and loss interfaces.}]
+# vae_mnist/config.py
+@dataclass
+class TrainConfig:
+    data_dir: str = "work/data"
+    output_dir: str = "work/experiment_z20"
+    epochs: int = 50
+    batch_size: int = 100
+    hidden_dim: int = 500
+    latent_dim: int = 20
+    learning_rate: float = 0.01
+    optimizer: str = "adagrad"
+    seed: int = 42
+    dynamic_binarization: bool = True
+
+# vae_mnist/data.py
+def build_mnist_loaders(config: TrainConfig):
+    # Download MNIST and create seeded loaders.
+    return train_loader, test_loader
+\end{lstlisting}
+
+\begin{lstlisting}[style=pythonstyle,caption={Model and objective interfaces.}]
+# vae_mnist/model.py
+class VariationalAutoencoder(nn.Module):
+    def reset_parameters(self) -> None:
+        # Initializes linear weights from N(0, 0.01^2).
+
+    def encode(self, x):
+        return mu, logvar
+
+    @staticmethod
+    def reparameterize(mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        return mu + std * torch.randn_like(std)
+
+    def decode_logits(self, z):
+        return logits
+
+    def forward(self, x):
+        # Compose encode, reparameterize, and decode_logits.
+        return logits, mu, logvar
+
+# vae_mnist/losses.py
+def negative_elbo(logits, target, mu, logvar):
+    # All three tensors are sums over the current minibatch.
+    return nelbo, reconstruction, kl
+\end{lstlisting}
+
+\begin{lstlisting}[style=pythonstyle,caption={Optimization, utility, and entry-point interfaces.}]
+# vae_mnist/engine.py
+def run_epoch(model, loader, device, optimizer=None,
+              dynamic_binarization=False):
+    # optimizer=None selects evaluation mode.
+    return {"nelbo": nelbo_per_image,
+            "reconstruction": recon_per_image,
+            "kl": kl_per_image}
+
+def fit(model, train_loader, test_loader, optimizer,
+        device, config):
+    # One dictionary per epoch, with train/test ELBO terms.
+    return history
+
+# vae_mnist/utils.py
+def seed_everything(seed: int) -> None:
+    # Seeds Python, NumPy, PyTorch, and MPS.
+
+def choose_device():
+    # Selects CUDA first, then MPS, then CPU.
+    return device
+
+def save_json(value, path: Path) -> None:
+    # Writes a reproducible metadata file.
+\end{lstlisting}
+
+\begin{lstlisting}[style=pythonstyle,caption={Checkpoint and training entry-point interfaces.}]
+# vae_mnist/checkpoint.py
+def save_checkpoint(path, model, optimizer, config, metrics):
+    # Writes model/optimizer states, config, and metrics.
+    return checkpoint_path
+
+def load_checkpoint(path, device):
+    # Restores weights and switches the model to eval mode.
+    return model, config, checkpoint
+
+# train.py
+def build_argument_parser():
+    return parser
+
+def config_from_args(args):
+    return TrainConfig(...)
+
+def build_optimizer(model, config):
+    return optimizer  # Adagrad by default; Adam is optional.
+
+def main() -> None:
+    # Calls fit(), then save_checkpoint(..., "checkpoint.pt").
+\end{lstlisting}
+
+\begin{lstlisting}[style=pythonstyle,caption={Checkpoint inference used to generate Figures 2, 4, and 5.}]
+# vae_mnist/inference.py
+def encode(model, images, device):
+    return mu, logvar
+
+def reconstruct(model, images, device):
+    # Decode posterior means; shape is [N, 1, 28, 28].
+    return reconstructions
+
+def interpolate(model, start_images,
+                end_images, device, steps=10):
+    # Shape is [number_of_pairs, steps, 1, 28, 28].
+    return decoded_paths
+
+def generate(model, num_samples, device):
+    # Draw z ~ N(0,I); shape is [num_samples, 1, 28, 28].
+    return generated_images
+
+# vae_mnist/visualization.py
+def save_reconstructions(model, test_loader, device, figure_dir):
+    return None  # Writes reconstructions.png (Figure 2).
+
+def save_latent_interpolations(model, test_loader,
+                               device, figure_dir):
+    return None  # Writes latent_interpolations.png (Figure 4).
+
+def save_prior_samples(model, device, figure_dir):
+    return None  # Writes prior_samples.png (Figure 5).
+
+# infer.py
+def main() -> None:
+    model, config, checkpoint = load_checkpoint(path, device)
+    # --task reconstruct, interpolate, generate, or all
+    return None
+
+# tests/test_smoke.py
+class VaeSmokeTest(unittest.TestCase):
+    def test_checkpoint_and_inference_interfaces(self) -> None:
+        # Checks checkpoint round-trip and every inference shape.
+\end{lstlisting}
+
+The \code{pretrained/} directory contains \code{checkpoint.pt}, the saved configuration, metrics, history, and generated figures. A training run starts at \code{train.py::main}. General inference starts at \code{infer.py::main}; \code{--task all} regenerates Figures~\ref{fig:reconstruction}, \ref{fig:interpolation}, and \ref{fig:samples} from the checkpoint without optimization. The broader \code{render\_checkpoint.py::main} entry point additionally recreates the training curves and t-SNE figure.
+
+\subsection{Training algorithm}
+
+The stochastic training loop is the minibatch AEVB algorithm specialized to MNIST:
+
+\begin{enumerate}
+  \item Sample a shuffled minibatch of 100 images and dynamically binarize its pixels.
+  \item Encode each image to $(\bm{\mu},\log\bm{\sigma}^2)$.
+  \item Draw one $\bm{\epsilon}\sim\mathcal{N}(\bm{0},\bm{I})$ per image and construct $\bm{z}$.
+  \item Decode $\bm{z}$ into 784 Bernoulli logits.
+  \item Sum binary cross-entropy and analytic KL over the batch, divide by batch size, and backpropagate.
+  \item Update $\theta$ and $\phi$ jointly with Adagrad.
+\end{enumerate}
+
+Dynamic binarization resamples each training pixel as Bernoulli$(x_d)$ on every visit. This matches the discrete Bernoulli observation model while using the original grayscale intensity as the sampling probability. Test targets remain in $[0,1]$ to make the held-out curve less noisy.
+
+\subsection{Reproducibility controls}
+
+The \path{train.py} entry point seeds Python, NumPy, and PyTorch; uses a seeded data-loader generator; and calls \path{save_checkpoint} to store the model state, optimizer state, configuration, and metrics. The matching \path{load_checkpoint} function reconstructs the model in evaluation mode. The run is self-contained: MNIST is downloaded automatically if absent. The separate \path{infer.py} and \path{render_checkpoint.py} entry points recreate outputs without repeating training.
+
+\section{Results}
+
+\subsection{Quantitative results}
+
+\begin{table}[H]
+\centering
+\caption{Held-out comparison after 50 epochs. Lower negative ELBO and bits/dimension are better.}
+\label{tab:results}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Metric & Preliminary $J=2$ & Final $J=20$ & Change \\
+\midrule
+Test negative ELBO & 166.065 & \textbf{112.599} & $-53.466$ nats/image \\
+Test reconstruction term & 161.175 & \textbf{87.900} & Sharper reconstructions \\
+Test KL term & 4.891 & \textbf{24.698} & More encoded information \\
+Bits/dimension & 0.3056 & \textbf{0.2072} & 32.2\% reduction \\
+Training examples evaluated & 3,000,000 & 3,000,000 & Equal data budget \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The 20-D model improves the primary metric by 53.466 nats/image relative to the preliminary 2-D model under the same epoch and minibatch budget. Figure~\ref{fig:curves} shows that its test negative ELBO falls from 171.4 after the first epoch to 112.6 at epoch 50. The final train--test gap is only 2.34 nats/image. The KL contribution grows to 24.7 nats/image instead of collapsing, confirming that the additional latent coordinates carry useful information.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{training_curves.png}
+\caption{Optimization history and decomposition of the held-out negative ELBO.}
+\label{fig:curves}
+\end{figure}
+
+\newpage
+\subsection{Reconstruction}
+
+For reconstruction, the test image is encoded and the posterior mean $\bm{\mu}(\bm{x})$ is decoded. Using the mean removes sampling noise and tests whether the learned representation retains digit identity. Figure~\ref{fig:reconstruction} shows sharp posterior-mean reconstructions across all twelve examples. Compared with $J=2$, thin strokes, loops, and digit-specific geometry are substantially better preserved. It is generated directly by \code{infer.py --task reconstruct}, which calls \code{load\_checkpoint}, \code{reconstruct}, and \code{save\_reconstructions}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{reconstructions.png}
+\caption{Top row: unseen MNIST inputs. Bottom row: posterior-mean reconstructions.}
+\label{fig:reconstruction}
+\end{figure}
+
+\subsection{Latent representation}
+
+Because the learned representation is 20-dimensional, plotting two raw coordinates would be arbitrary. Figure~\ref{fig:tsne} embeds 5,000 posterior means with t-SNE using perplexity 30, PCA initialization, 1,000 iterations, and random seed 42. The well-separated digit clusters indicate that the unsupervised representation captures class-related structure. Local neighborhoods are meaningful, but the global distances and cluster sizes should not be interpreted as metric properties of the original 20-D space. Labels are used only after training for coloring.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\textwidth]{latent_tsne.png}
+\caption{Fixed-seed t-SNE embedding of 5,000 twenty-dimensional posterior means (perplexity 30). Labels are used only for coloring after training.}
+\label{fig:tsne}
+\end{figure}
+
+\newpage
+\subsection{Generative behavior}
+
+Figure~\ref{fig:interpolation} linearly interpolates between posterior means for five pairs of held-out digits. Every row changes gradually from its source to its destination: $0\rightarrow1$, $2\rightarrow3$, $4\rightarrow5$, $6\rightarrow7$, and $8\rightarrow9$. Smooth intermediate images show that the 20-D latent representation has learned coherent local geometry even though it cannot be displayed directly as a plane. The figure is generated by \code{infer.py --task interpolate}, which calls \code{interpolate} and \code{save\_latent\_interpolations}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.98\textwidth]{latent_interpolations.png}
+\caption{Ten-step posterior-mean interpolations between five pairs of held-out digit classes.}
+\label{fig:interpolation}
+\end{figure}
+
+Independent samples $\bm{z}\sim\mathcal{N}(\bm{0},\bm{I})$ in Figure~\ref{fig:samples} produce substantially more varied digit-like images than the 2-D model. The \code{generate} task in \code{infer.py} calls \code{generate} and \path{save_prior_samples}. Ambiguous samples remain because the decoder factorizes pixels as independent Bernoulli variables and the run is shorter than the paper's longest training horizons.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.68\textwidth]{prior_samples.png}
+\caption{One hundred independent samples from the learned decoder with $\bm{z}\sim\mathcal{N}(\bm{0},\bm{I})$.}
+\label{fig:samples}
+\end{figure}
+
+\section{Validation and Interpretation}
+
+\subsection{Sanity checks}
+
+\begin{table}[H]
+\centering
+\caption{Checks used to decide whether the reproduction was successful.}
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X p{0.13\textwidth}@{}}
+\toprule
+Check & Evidence & Status \\
+\midrule
+Objective improves & Test negative ELBO decreases by 58.85 nats/image from epoch 1 to 50. & Pass \\
+Generalization is stable & Final train--test gap is 2.34 nats/image. & Pass \\
+Posterior is active & Final KL is 24.698 nats/image, not approximately zero. & Pass \\
+Reconstructions retain identity & Posterior-mean outputs preserve strokes, loops, and digit identity. & Pass \\
+Latent structure is meaningful & Fixed-seed t-SNE forms digit-related clusters; interpolations are smooth. & Pass \\
+Prior generates recognizable data & Prior samples are varied and predominantly digit-like. & Pass \\
+Exact paper comparison & No identical training horizon or baseline was available. & Not claimed \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{What the experiment demonstrates}
+
+The reproduction supports the paper's central mechanism. A single differentiable objective trains the inference and generative networks jointly. The analytic KL term supplies a principled regularizer, while reparameterization permits ordinary backpropagation through latent samples. The learned prior is not merely a compression device: sampling from it produces new observations, and continuous paths in latent space decode to continuous changes in image space.
+
+The experiment also makes the reconstruction--regularization trade-off visible. The preliminary two-dimensional code was convenient to plot directly but compressed away stroke details. Increasing to $J=20$ sharply improves reconstruction and sample diversity. Direct visualization is recovered after training with t-SNE for neighborhood structure and explicit latent interpolations for continuity; neither visualization changes the learned model.
+
+\section{Conclusion and Limitations}
+
+This write-up reproduces the paper's MNIST VAE with the same probabilistic ingredients and closely matched architectural choices. After 50 epochs, the final 20-D model reaches a held-out negative ELBO of 112.599 nats/image, 53.466 nats/image better than the preliminary two-dimensional model. It reconstructs unseen digits sharply, forms class-related neighborhoods in a fixed-seed t-SNE embedding, supports smooth semantic interpolations, and generates diverse digit-like samples from the standard-normal prior.
+
+The main limitations are deliberate. First, the final study reports one 20-D run and uses the 2-D run only as a diagnostic comparison; it is not a multi-seed latent-size ablation. Second, the wake-sleep and Monte Carlo EM baselines are omitted. Third, training covers 3 million examples, whereas the paper plots substantially longer horizons. Fourth, the paper mentions a small weight-decay term without giving its coefficient, so this reproduction omits it rather than choosing an undocumented value. Fifth, t-SNE preserves local neighborhoods but can distort global distances. Finally, the one-sample ELBO is a lower bound and should not be read as an exact marginal log-likelihood.
+
+A stronger follow-up would train $J\in\{2,5,10,20\}$ under an equal compute budget, report multiple seeds, add importance-weighted likelihood estimates, and measure sample quality with a classifier-based precision/recall analysis. Those extensions are useful scientific comparisons but are not required to validate the AEVB mechanism reproduced here.
+
+\appendix
+\section{How to Run the Reproduction}
+\label{app:run}
+
+From the \code{vae\_mnist\_training/} project directory:
+
+\begin{lstlisting}[style=pythonstyle]
+python3 -m pip install -r requirements.txt
+python3 train.py \
+  --epochs 50 \
+  --batch-size 100 \
+  --hidden-dim 500 \
+  --latent-dim 20 \
+  --learning-rate 0.01 \
+  --optimizer adagrad \
+  --seed 42 \
+  --data-dir ../../work/data \
+  --output-dir ../../work/experiment_z20_project
+\end{lstlisting}
+
+After training, load the saved checkpoint and regenerate Figure~\ref{fig:reconstruction}, Figure~\ref{fig:interpolation}, and Figure~\ref{fig:samples} without optimization:
+
+\begin{lstlisting}[style=pythonstyle]
+python3 infer.py \
+  --checkpoint pretrained/checkpoint.pt \
+  --data-dir ../../work/data \
+  --output-dir ../../work/inference_figures \
+  --task all \
+  --seed 42
+\end{lstlisting}
+
+Replace \code{all} with \code{reconstruct}, \code{interpolate}, or \code{generate} to produce only Figure~\ref{fig:reconstruction}, Figure~\ref{fig:interpolation}, or Figure~\ref{fig:samples}, respectively.
+
+Required packages:
+
+\begin{lstlisting}[style=pythonstyle]
+python3 -m pip install torch==2.9.1 torchvision==0.24.1 \
+  numpy matplotlib pillow scikit-learn
+\end{lstlisting}
+
+The output directory contains \code{checkpoint.pt}, \code{config.json}, \code{metrics.json}, \code{history.csv}, and five PNG figures. On CUDA or MPS hardware the script selects an accelerator automatically; otherwise it runs on CPU. Validate shapes and gradient flow before a full run with:
+
+\begin{lstlisting}[style=pythonstyle]
+python3 -m unittest tests/test_smoke.py
+\end{lstlisting}
+
+To regenerate figures from the delivered checkpoint, use \path{render_checkpoint.py} as documented in the project README.
+
+\section{Loss-to-Code Map}
+
+\begin{table}[H]
+\centering
+\caption{Direct correspondence between the derivation and implementation.}
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}p{0.31\textwidth}X@{}}
+\toprule
+Mathematical quantity & PyTorch expression & Note \\
+\midrule
+$\bm{\sigma}$ & \code{torch.exp(0.5 * logvar)} & Log-variance is numerically convenient. \\
+$\bm{z}$ & \code{mu + std * randn\_like(std)} & Equation~\eqref{eq:reparam}. \\
+$-\log p_\theta(\bm{x}\mid\bm{z})$ & \code{binary\_cross\_entropy}\newline\code{\_with\_logits} & Sums over pixels and batch. \\
+$\KL(q_\phi\|p)$ & \code{-0.5 * sum(1 + logvar -}\newline\code{mu**2 - exp(logvar))} & Exact diagonal-Gaussian result. \\
+$-\mathcal{L}$ & \code{reconstruction + kl} & Minimized by the optimizer. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{References}
+
+\begin{thebibliography}{9}
+
+\bibitem{kingma2013}
+D. P. Kingma and M. Welling.
+\newblock Auto-Encoding Variational Bayes.
+\newblock \emph{arXiv:1312.6114}, 2013.
+
+\bibitem{lecun1998}
+Y. LeCun, L. Bottou, Y. Bengio, and P. Haffner.
+\newblock Gradient-based learning applied to document recognition.
+\newblock \emph{Proceedings of the IEEE}, 86(11):2278--2324, 1998.
+
+\bibitem{duchi2011}
+J. Duchi, E. Hazan, and Y. Singer.
+\newblock Adaptive subgradient methods for online learning and stochastic optimization.
+\newblock \emph{Journal of Machine Learning Research}, 12:2121--2159, 2011.
+
+\bibitem{pytorch}
+A. Paszke et al.
+\newblock PyTorch: An imperative style, high-performance deep learning library.
+\newblock \emph{Advances in Neural Information Processing Systems}, 2019.
+
+\end{thebibliography}
+
+\end{document}

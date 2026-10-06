@@ -1,0 +1,21 @@
+{
+  "config": {
+    "data_dir": "../../work/data",
+    "output_dir": "../../work/experiment_z20_project",
+    "epochs": 50,
+    "batch_size": 100,
+    "hidden_dim": 500,
+    "latent_dim": 20,
+    "learning_rate": 0.01,
+    "optimizer": "adagrad",
+    "seed": 42,
+    "dynamic_binarization": true
+  },
+  "device": "mps",
+  "train_examples": 60000,
+  "test_examples": 10000,
+  "final_test_nelbo_nats_per_image": 112.59865234375,
+  "final_test_reconstruction_nats_per_image": 87.90034052734374,
+  "final_test_kl_nats_per_image": 24.69831164550781,
+  "final_test_bits_per_dimension": 0.2072009149835569
+}
